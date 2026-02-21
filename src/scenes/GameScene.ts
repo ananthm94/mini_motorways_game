@@ -201,7 +201,6 @@ export class GameScene extends Phaser.Scene {
         this.upgradeButtonTexts.push(
             this.add.text(width - 150, buttonY, 'Roundabout (0)', { fontSize: '14px', color: '#ffffff', fontFamily: 'Arial' }).setOrigin(0.5),
             this.add.text(width - 150, buttonY + buttonHeight + buttonSpacing, 'Bridge (0)', { fontSize: '14px', color: '#ffffff', fontFamily: 'Arial' }).setOrigin(0.5)
-        )
         );
 
         this.updateUpgradeButtons();
