@@ -7,42 +7,77 @@ export class RoadBuilder {
     private grid: Grid;
     private road: Road;
     private isBuilding: boolean = false;
-    private startGridPos: { gridX: number; gridY: number } | null = null;
+    private isErasing: boolean = false;
+    private lastBuiltPos: { gridX: number; gridY: number } | null = null;
     private previewGraphics: Phaser.GameObjects.Graphics;
+    private onEraseCallback?: () => void;
+    private checkUpgradeSelected?: () => boolean;
 
     constructor(scene: Phaser.Scene, grid: Grid, road: Road) {
         this.scene = scene;
         this.grid = grid;
         this.road = road;
         this.previewGraphics = scene.add.graphics();
+        this.previewGraphics.setDepth(10);
 
         this.setupInput();
+    }
+
+    setOnErase(callback: () => void): void {
+        this.onEraseCallback = callback;
+    }
+
+    setUpgradeCheck(callback: () => boolean): void {
+        this.checkUpgradeSelected = callback;
     }
 
     private setupInput(): void {
         // Mouse/touch input for road building
         this.scene.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-            if (pointer.leftButtonDown()) {
+            if (pointer.rightButtonDown()) {
+                // Right click for erasing
+                this.isErasing = true;
+                this.eraseAt(pointer.x, pointer.y);
+            } else if (pointer.leftButtonDown()) {
                 this.startBuilding(pointer.x, pointer.y);
             }
         });
 
         this.scene.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
-            if (this.isBuilding && pointer.isDown) {
-                this.updateBuilding(pointer.x, pointer.y);
-            } else if (this.isBuilding) {
-                this.finishBuilding(pointer.x, pointer.y);
+            if (this.isErasing && pointer.isDown) {
+                this.eraseAt(pointer.x, pointer.y);
+            } else if (this.isBuilding && pointer.isDown) {
+                // Continuously build roads as you drag
+                this.continueBuilding(pointer.x, pointer.y);
             }
         });
 
         this.scene.input.on('pointerup', (pointer: Phaser.Input.Pointer) => {
             if (this.isBuilding) {
-                this.finishBuilding(pointer.x, pointer.y);
+                this.stopBuilding();
             }
+            this.isErasing = false;
         });
     }
 
+    private eraseAt(x: number, y: number): void {
+        const gridPos = this.grid.worldToGrid(x, y);
+        if (this.grid.isValidGridPosition(gridPos.gridX, gridPos.gridY)) {
+            if (this.road.hasSegment(gridPos.gridX, gridPos.gridY)) {
+                this.road.removeSegment(gridPos.gridX, gridPos.gridY);
+                if (this.onEraseCallback) {
+                    this.onEraseCallback();
+                }
+            }
+        }
+    }
+
     private startBuilding(x: number, y: number): void {
+        // Don't start building if an upgrade is selected
+        if (this.checkUpgradeSelected && this.checkUpgradeSelected()) {
+            return;
+        }
+
         const gridPos = this.grid.worldToGrid(x, y);
         
         if (!this.grid.isValidGridPosition(gridPos.gridX, gridPos.gridY)) {
@@ -50,11 +85,15 @@ export class RoadBuilder {
         }
 
         this.isBuilding = true;
-        this.startGridPos = gridPos;
+        this.lastBuiltPos = gridPos;
+        
+        // Build the first segment immediately
+        this.road.addSegment(gridPos.gridX, gridPos.gridY);
+        this.road.render();
     }
 
-    private updateBuilding(x: number, y: number): void {
-        if (!this.isBuilding || !this.startGridPos) return;
+    private continueBuilding(x: number, y: number): void {
+        if (!this.isBuilding || !this.lastBuiltPos) return;
 
         const currentGridPos = this.grid.worldToGrid(x, y);
         
@@ -62,59 +101,30 @@ export class RoadBuilder {
             return;
         }
 
-        // Draw preview
-        this.drawPreview(this.startGridPos, currentGridPos);
-    }
-
-    private finishBuilding(x: number, y: number): void {
-        if (!this.isBuilding || !this.startGridPos) return;
-
-        const endGridPos = this.grid.worldToGrid(x, y);
-        
-        if (!this.grid.isValidGridPosition(endGridPos.gridX, endGridPos.gridY)) {
-            this.cancelBuilding();
-            return;
-        }
-
-        // Build road path between start and end
-        this.buildRoadPath(this.startGridPos, endGridPos);
-        
-        this.cancelBuilding();
-    }
-
-    private cancelBuilding(): void {
-        this.isBuilding = false;
-        this.startGridPos = null;
-        this.previewGraphics.clear();
-    }
-
-    private drawPreview(start: { gridX: number; gridY: number }, end: { gridX: number; gridY: number }): void {
-        this.previewGraphics.clear();
-        this.previewGraphics.lineStyle(3, 0x7f8c8d, 0.5);
-
-        const path = this.getPathBetween(start, end);
-        const gridSize = this.grid.getGridSize();
-
-        for (let i = 0; i < path.length - 1; i++) {
-            const startWorld = this.grid.gridToWorld(path[i].gridX, path[i].gridY);
-            const endWorld = this.grid.gridToWorld(path[i + 1].gridX, path[i + 1].gridY);
+        // If we've moved to a new grid cell, build the path
+        if (currentGridPos.gridX !== this.lastBuiltPos.gridX || currentGridPos.gridY !== this.lastBuiltPos.gridY) {
+            // Build path from last position to current position
+            const path = this.getPathBetween(this.lastBuiltPos, currentGridPos);
             
-            this.previewGraphics.lineBetween(
-                startWorld.x,
-                startWorld.y,
-                endWorld.x,
-                endWorld.y
-            );
+            // Add all segments in the path
+            for (const segment of path) {
+                this.road.addSegment(segment.gridX, segment.gridY);
+            }
+            
+            // Update last built position
+            this.lastBuiltPos = currentGridPos;
+            
+            // Re-render roads
+            this.road.render();
         }
     }
 
-    private buildRoadPath(start: { gridX: number; gridY: number }, end: { gridX: number; gridY: number }): void {
-        const path = this.getPathBetween(start, end);
-        
-        for (const segment of path) {
-            this.road.addSegment(segment.gridX, segment.gridY);
-        }
+    private stopBuilding(): void {
+        this.isBuilding = false;
+        this.lastBuiltPos = null;
+        this.previewGraphics.clear();
     }
+
 
     /**
      * Get a path between two grid positions (simple line algorithm)

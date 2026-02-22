@@ -15,18 +15,18 @@ export const GameConfig = {
     ],
     
     // Spawning
-    INITIAL_SPAWN_DELAY: 4000, // ms before first spawn
-    SPAWN_INTERVAL: 6000, // ms between spawns
-    SPAWN_INTERVAL_DECREASE: 100, // decrease by this amount each spawn
-    MIN_SPAWN_INTERVAL: 2500, // minimum interval
+    INITIAL_SPAWN_DELAY: 6000, // ms before first spawn (more time)
+    SPAWN_INTERVAL: 8000, // ms between spawns (more time)
+    SPAWN_INTERVAL_DECREASE: 50, // decrease by this amount each spawn (slower progression)
+    MIN_SPAWN_INTERVAL: 4000, // minimum interval (more time)
     
     // Traffic
-    CAR_SPEED: 80, // pixels per second (slightly slower for better visibility)
-    CAR_SPAWN_DELAY: 3000, // ms between car spawns from same house
-    MAX_CARS_PER_DESTINATION: 6, // game over if exceeded
+    CAR_SPEED: 150, // pixels per second (faster cars)
+    CAR_SPAWN_DELAY: 4000, // ms between car spawns from same house (more time)
+    MAX_CARS_PER_DESTINATION: 8, // game over if exceeded (more lenient)
     
     // Road
-    ROAD_WIDTH: 20, // pixels
+    ROAD_WIDTH: 4, // pixels (line width)
     ROAD_COLOR: 0x34495e,
     
     // Buildings

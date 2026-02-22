@@ -58,6 +58,31 @@ export class Road {
     }
 
     /**
+     * Remove a road segment at grid coordinates
+     */
+    removeSegment(gridX: number, gridY: number): boolean {
+        const key = `${gridX},${gridY}`;
+        const segment = this.segments.get(key);
+        
+        if (!segment) {
+            return false;
+        }
+
+        // Remove connections from neighbors
+        for (const neighborKey of segment.neighbors) {
+            const neighbor = this.segments.get(neighborKey);
+            if (neighbor) {
+                neighbor.neighbors.delete(key);
+            }
+        }
+
+        // Remove the segment
+        this.segments.delete(key);
+        this.render();
+        return true;
+    }
+
+    /**
      * Check if a road segment exists at grid coordinates
      */
     hasSegment(gridX: number, gridY: number): boolean {
@@ -86,27 +111,41 @@ export class Road {
     }
 
     /**
-     * Render all road segments
+     * Render all road segments as connected lines
      */
     render(): void {
         this.graphics.clear();
-        this.graphics.fillStyle(GameConfig.ROAD_COLOR);
+        this.graphics.lineStyle(GameConfig.ROAD_WIDTH, GameConfig.ROAD_COLOR, 1);
+        this.graphics.setDepth(0);
 
         const gridSize = GameConfig.GRID_SIZE;
-        const roadWidth = GameConfig.ROAD_WIDTH;
+        const drawnLines = new Set<string>();
 
         for (const segment of this.segments.values()) {
             const x = segment.gridX * gridSize + gridSize / 2;
             const y = segment.gridY * gridSize + gridSize / 2;
-            
-            // Draw road segment with rounded corners
-            this.graphics.fillRoundedRect(
-                x - roadWidth / 2,
-                y - roadWidth / 2,
-                roadWidth,
-                roadWidth,
-                2
-            );
+
+            // Draw lines to all neighbors
+            for (const neighbor of segment.neighbors) {
+                const lineKey = [segment.gridX, segment.gridY, ...neighbor.split(',').map(Number)].sort().join(',');
+                
+                if (!drawnLines.has(lineKey)) {
+                    const neighborSegment = this.segments.get(neighbor);
+                    if (neighborSegment) {
+                        const nx = neighborSegment.gridX * gridSize + gridSize / 2;
+                        const ny = neighborSegment.gridY * gridSize + gridSize / 2;
+                        
+                        this.graphics.lineBetween(x, y, nx, ny);
+                        drawnLines.add(lineKey);
+                    }
+                }
+            }
+
+            // If no neighbors, draw a small dot
+            if (segment.neighbors.size === 0) {
+                this.graphics.fillStyle(GameConfig.ROAD_COLOR);
+                this.graphics.fillCircle(x, y, GameConfig.ROAD_WIDTH / 4);
+            }
         }
     }
 

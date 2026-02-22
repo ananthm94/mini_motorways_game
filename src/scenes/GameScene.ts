@@ -8,8 +8,6 @@ import { GameStateManager, GameState } from '../systems/GameState';
 import { UpgradeManager } from '../systems/UpgradeManager';
 import { UpgradeType } from '../entities/Upgrade';
 import { GameConfig } from '../config/GameConfig';
-import { Pathfinding } from '../utils/Pathfinding';
-
 export class GameScene extends Phaser.Scene {
     private grid!: Grid;
     private road!: Road;
@@ -21,11 +19,12 @@ export class GameScene extends Phaser.Scene {
 
     // UI elements
     private scoreText!: Phaser.GameObjects.Text;
-    private upgradeButtons: Phaser.GameObjects.Rectangle[] = [];
     private upgradeButtonTexts: Phaser.GameObjects.Text[] = [];
     private gameOverPanel!: Phaser.GameObjects.Container | null;
     private roundaboutButton!: Phaser.GameObjects.Rectangle;
     private bridgeButton!: Phaser.GameObjects.Rectangle;
+    private warningAlert!: Phaser.GameObjects.Container | null;
+    private lastWarningTime: number = 0;
 
     // Upgrade earning
     private upgradeEarnTimer: Phaser.Time.TimerEvent | null = null;
@@ -37,7 +36,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     create() {
-        const { width, height } = this.cameras.main;
+        const { width } = this.cameras.main;
         
         // Set background color
         this.cameras.main.setBackgroundColor(0x2c3e50);
@@ -46,6 +45,14 @@ export class GameScene extends Phaser.Scene {
         this.grid = new Grid();
         this.road = new Road(this);
         this.roadBuilder = new RoadBuilder(this, this.grid, this.road);
+        this.roadBuilder.setOnErase(() => {
+            // Re-render roads after erase
+            this.road.render();
+        });
+        this.roadBuilder.setUpgradeCheck(() => {
+            // Return true if an upgrade is selected
+            return this.upgradeManager.getSelectedUpgrade() !== null;
+        });
         this.spawnManager = new SpawnManager(this, this.grid, this.road);
         this.trafficManager = new TrafficManager(this, this.grid, this.road);
         this.gameState = new GameStateManager();
@@ -91,23 +98,48 @@ export class GameScene extends Phaser.Scene {
         });
 
         // Handle upgrade placement clicks (separate from road building)
+        // This is handled in RoadBuilder, but we need to check for upgrade placement
+        // Upgrade placement happens on left click when an upgrade is selected
         this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
             if (this.gameState.getState() !== GameState.PLAYING) return;
+            
+            // Don't interfere with road building or erasing
+            if (pointer.rightButtonDown()) return;
 
             const selectedUpgrade = this.upgradeManager.getSelectedUpgrade();
-            if (selectedUpgrade && pointer.rightButtonDown() === false) {
-                const gridPos = this.grid.worldToGrid(pointer.x, pointer.y);
-                if (this.grid.isValidGridPosition(gridPos.gridX, gridPos.gridY)) {
-                    const placed = this.upgradeManager.placeUpgrade(gridPos.gridX, gridPos.gridY);
-                    if (placed) {
-                        // Consume upgrade
-                        if (selectedUpgrade === UpgradeType.ROUNDABOUT) {
-                            this.roundaboutCount = Math.max(0, this.roundaboutCount - 1);
-                        } else if (selectedUpgrade === UpgradeType.BRIDGE) {
-                            this.bridgeCount = Math.max(0, this.bridgeCount - 1);
+            if (selectedUpgrade) {
+                // Check if clicking on UI buttons (don't place upgrade)
+                const buttonX = this.cameras.main.width - 160;
+                const buttonY = 100;
+                const buttonWidth = 140;
+                const buttonHeight = 45;
+                const buttonSpacing = 12;
+                
+                const clickX = pointer.x;
+                const clickY = pointer.y;
+                
+                // Check if click is on upgrade buttons
+                const onRoundaboutButton = clickX >= buttonX - buttonWidth/2 && clickX <= buttonX + buttonWidth/2 &&
+                                         clickY >= buttonY - buttonHeight/2 && clickY <= buttonY + buttonHeight/2;
+                const onBridgeButton = clickX >= buttonX - buttonWidth/2 && clickX <= buttonX + buttonWidth/2 &&
+                                      clickY >= (buttonY + buttonHeight + buttonSpacing) - buttonHeight/2 && 
+                                      clickY <= (buttonY + buttonHeight + buttonSpacing) + buttonHeight/2;
+                
+                if (!onRoundaboutButton && !onBridgeButton) {
+                    // Place upgrade
+                    const gridPos = this.grid.worldToGrid(pointer.x, pointer.y);
+                    if (this.grid.isValidGridPosition(gridPos.gridX, gridPos.gridY)) {
+                        const placed = this.upgradeManager.placeUpgrade(gridPos.gridX, gridPos.gridY);
+                        if (placed) {
+                            // Consume upgrade
+                            if (selectedUpgrade === UpgradeType.ROUNDABOUT) {
+                                this.roundaboutCount = Math.max(0, this.roundaboutCount - 1);
+                            } else if (selectedUpgrade === UpgradeType.BRIDGE) {
+                                this.bridgeCount = Math.max(0, this.bridgeCount - 1);
+                            }
+                            this.updateUpgradeButtons();
+                            this.upgradeManager.selectUpgrade(null);
                         }
-                        this.updateUpgradeButtons();
-                        this.upgradeManager.selectUpgrade(null);
                     }
                 }
             }
@@ -143,6 +175,9 @@ export class GameScene extends Phaser.Scene {
             this.gameState.addScore(deliveries * GameConfig.POINTS_PER_DELIVERY);
         }
 
+        // Check for warnings (too many cars waiting)
+        this.checkWarnings(destinations, time);
+
         // Check game over condition
         if (this.gameState.checkGameOver(destinations)) {
             this.gameState.endGame();
@@ -156,52 +191,105 @@ export class GameScene extends Phaser.Scene {
         this.scoreText = this.add.text(20, 20, 'Score: 0', {
             fontSize: '24px',
             color: '#ecf0f1',
+            fontFamily: 'Arial',
+            fontStyle: 'bold'
+        }).setDepth(100);
+
+        // Instructions
+        this.add.text(20, 50, 'Left-click: Build roads | Right-click: Erase', {
+            fontSize: '14px',
+            color: '#bdc3c7',
             fontFamily: 'Arial'
-        });
+        }).setDepth(100);
 
         // Upgrade buttons
-        const buttonY = 60;
-        const buttonWidth = 120;
-        const buttonHeight = 40;
-        const buttonSpacing = 10;
+        const buttonY = 100;
+        const buttonWidth = 140;
+        const buttonHeight = 45;
+        const buttonSpacing = 12;
 
         // Roundabout button
         this.roundaboutButton = this.add.rectangle(
-            width - 150,
+            width - 160,
             buttonY,
             buttonWidth,
             buttonHeight,
             0x3498db
         )
         .setInteractive({ useHandCursor: true })
+        .setDepth(100)
         .on('pointerdown', () => {
             if (this.roundaboutCount > 0) {
-                this.upgradeManager.selectUpgrade(UpgradeType.ROUNDABOUT);
+                const current = this.upgradeManager.getSelectedUpgrade();
+                if (current === UpgradeType.ROUNDABOUT) {
+                    // Deselect if already selected
+                    this.upgradeManager.selectUpgrade(null);
+                } else {
+                    this.upgradeManager.selectUpgrade(UpgradeType.ROUNDABOUT);
+                }
                 this.updateUpgradeButtons();
             }
+        })
+        .on('pointerover', () => {
+            if (this.roundaboutCount > 0) {
+                this.roundaboutButton.setFillStyle(0x2980b9);
+            }
+        })
+        .on('pointerout', () => {
+            this.updateUpgradeButtons();
         });
 
         // Bridge button
         this.bridgeButton = this.add.rectangle(
-            width - 150,
+            width - 160,
             buttonY + buttonHeight + buttonSpacing,
             buttonWidth,
             buttonHeight,
             0x95a5a6
         )
         .setInteractive({ useHandCursor: true })
+        .setDepth(100)
         .on('pointerdown', () => {
             if (this.bridgeCount > 0) {
-                this.upgradeManager.selectUpgrade(UpgradeType.BRIDGE);
+                const current = this.upgradeManager.getSelectedUpgrade();
+                if (current === UpgradeType.BRIDGE) {
+                    // Deselect if already selected
+                    this.upgradeManager.selectUpgrade(null);
+                } else {
+                    this.upgradeManager.selectUpgrade(UpgradeType.BRIDGE);
+                }
                 this.updateUpgradeButtons();
             }
+        })
+        .on('pointerover', () => {
+            if (this.bridgeCount > 0) {
+                this.bridgeButton.setFillStyle(0x7f8c8d);
+            }
+        })
+        .on('pointerout', () => {
+            this.updateUpgradeButtons();
         });
 
-        // Store button text references for updating
-        this.upgradeButtonTexts.push(
-            this.add.text(width - 150, buttonY, 'Roundabout (0)', { fontSize: '14px', color: '#ffffff', fontFamily: 'Arial' }).setOrigin(0.5),
-            this.add.text(width - 150, buttonY + buttonHeight + buttonSpacing, 'Bridge (0)', { fontSize: '14px', color: '#ffffff', fontFamily: 'Arial' }).setOrigin(0.5)
-        );
+        // Store button text references for updating (on top of buttons)
+        const roundaboutText = this.add.text(width - 160, buttonY, 'Roundabout (0)', { 
+            fontSize: '16px', 
+            color: '#ffffff', 
+            fontFamily: 'Arial',
+            fontStyle: 'bold',
+            stroke: '#000000',
+            strokeThickness: 2
+        }).setOrigin(0.5).setDepth(101);
+        
+        const bridgeText = this.add.text(width - 160, buttonY + buttonHeight + buttonSpacing, 'Bridge (0)', { 
+            fontSize: '16px', 
+            color: '#ffffff', 
+            fontFamily: 'Arial',
+            fontStyle: 'bold',
+            stroke: '#000000',
+            strokeThickness: 2
+        }).setOrigin(0.5).setDepth(101);
+        
+        this.upgradeButtonTexts.push(roundaboutText, bridgeText);
 
         this.updateUpgradeButtons();
     }
@@ -221,19 +309,124 @@ export class GameScene extends Phaser.Scene {
         const selectedUpgrade = this.upgradeManager.getSelectedUpgrade();
         
         if (this.roundaboutCount > 0) {
-            this.roundaboutButton.setFillStyle(
-                selectedUpgrade === UpgradeType.ROUNDABOUT ? 0x2980b9 : 0x3498db
-            );
+            const isSelected = selectedUpgrade === UpgradeType.ROUNDABOUT;
+            this.roundaboutButton.setFillStyle(isSelected ? 0x2980b9 : 0x3498db);
+            this.roundaboutButton.setAlpha(1);
+            roundaboutText.setColor('#ffffff');
+            roundaboutText.setAlpha(1);
         } else {
             this.roundaboutButton.setFillStyle(0x7f8c8d);
+            this.roundaboutButton.setAlpha(0.6);
+            roundaboutText.setColor('#bdc3c7');
+            roundaboutText.setAlpha(0.8);
         }
 
         if (this.bridgeCount > 0) {
-            this.bridgeButton.setFillStyle(
-                selectedUpgrade === UpgradeType.BRIDGE ? 0x7f8c8d : 0x95a5a6
-            );
+            const isSelected = selectedUpgrade === UpgradeType.BRIDGE;
+            this.bridgeButton.setFillStyle(isSelected ? 0x7f8c8d : 0x95a5a6);
+            this.bridgeButton.setAlpha(1);
+            bridgeText.setColor('#ffffff');
+            bridgeText.setAlpha(1);
         } else {
             this.bridgeButton.setFillStyle(0x7f8c8d);
+            this.bridgeButton.setAlpha(0.6);
+            bridgeText.setColor('#bdc3c7');
+            bridgeText.setAlpha(0.8);
+        }
+    }
+
+    private checkWarnings(destinations: Destination[], time: number): void {
+        const warningThreshold = GameConfig.MAX_CARS_PER_DESTINATION - 2;
+        const warningCooldown = 3000; // Show warning max once every 3 seconds
+        const currentTime = this.time.now;
+
+        for (const dest of destinations) {
+            const waitingCars = dest.getWaitingCars();
+            
+            if (waitingCars >= warningThreshold && (currentTime - this.lastWarningTime) > warningCooldown) {
+                this.showWarning(dest, waitingCars);
+                this.lastWarningTime = currentTime;
+                break; // Only show one warning at a time
+            }
+        }
+
+        // Auto-hide warning after 2.5 seconds
+        if (this.warningAlert && (currentTime - this.lastWarningTime) > 2500 && this.lastWarningTime > 0) {
+            this.hideWarning();
+        }
+    }
+
+    private showWarning(destination: Destination, waitingCars: number): void {
+        // Hide existing warning if any
+        this.hideWarning();
+
+        const { width, height } = this.cameras.main;
+        const remaining = GameConfig.MAX_CARS_PER_DESTINATION - waitingCars;
+
+        // Create warning alert
+        const alertBg = this.add.rectangle(
+            width / 2,
+            height - 100,
+            width - 40,
+            80,
+            0xe74c3c,
+            0.9
+        ).setDepth(200);
+
+        const warningText = this.add.text(
+            width / 2,
+            height - 120,
+            '⚠️ WARNING ⚠️',
+            {
+                fontSize: '28px',
+                color: '#ffffff',
+                fontFamily: 'Arial',
+                fontStyle: 'bold',
+                stroke: '#000000',
+                strokeThickness: 3
+            }
+        ).setOrigin(0.5).setDepth(201);
+
+        const messageText = this.add.text(
+            width / 2,
+            height - 85,
+            `Too many cars waiting! Only ${remaining} spots remaining before game over!`,
+            {
+                fontSize: '18px',
+                color: '#ffffff',
+                fontFamily: 'Arial',
+                fontStyle: 'bold',
+                stroke: '#000000',
+                strokeThickness: 2,
+                wordWrap: { width: width - 80 }
+            }
+        ).setOrigin(0.5).setDepth(201);
+
+        // Pulse animation
+        this.tweens.add({
+            targets: [alertBg, warningText, messageText],
+            alpha: { from: 0, to: 1 },
+            duration: 300,
+            ease: 'Power2'
+        });
+
+        this.warningAlert = this.add.container(0, 0, [alertBg, warningText, messageText]);
+    }
+
+    private hideWarning(): void {
+        if (this.warningAlert) {
+            this.tweens.add({
+                targets: this.warningAlert.list,
+                alpha: { from: 1, to: 0 },
+                duration: 300,
+                ease: 'Power2',
+                onComplete: () => {
+                    if (this.warningAlert) {
+                        this.warningAlert.destroy();
+                        this.warningAlert = null;
+                    }
+                }
+            });
         }
     }
 
